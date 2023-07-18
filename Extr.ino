@@ -664,7 +664,6 @@ void setup() {
 }
 
 void checkInput() {
-  checkInput();
   enc.tick();
   if (enc.right()) {
     editPnt(1);
