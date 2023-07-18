@@ -1,21 +1,12 @@
 #include <LiquidCrystal_I2C.h> 
-#include <EncButton.h>
+#include <EncButton2.h>
 #include <EEPROM.h>
 
-
-// Именуем пины на плате
-#define ENCBUT 3
-#define ENCR 4
-#define ENCL 5
-#define BUTL 12
-#define BUTR 13
-#define DT A0
-#define SCK A1
-#define PUMP A2
-
+#define BUTL 5
+#define BUTR 6
 
 LiquidCrystal_I2C lcd(0x27, 16, 2);
-EncButton<EB_TICK, ENCL, ENCR, ENCBUT> enc;
+EncButton2<EB_ENCBTN> enc(INPUT, 3, 2, 4);
 
 
 // Спецсимволы для экрана
@@ -87,20 +78,20 @@ byte spnLeft_[] = {
 };
 const int celc = 6;
 byte celc_[] = {
-  B11000,
-  B11000,
+  B10000,
   B00000,
   B01110,
   B10001,
   B10000,
   B10001,
-  B01110
+  B01110,
+  B00000
 };
 const int uno = 7;
-byte customChar[] = {
-  B00000,
+byte uno_[] = {
   B01000,
   B11000,
+  B01000,
   B01000,
   B01000,
   B01011,
@@ -125,13 +116,13 @@ char pnt; // номер выделенного фрагмента второй �
 char l, r; // левая и правая граница выделенного фрагмента
 bool txtOn; // мигание выделенного фрагмента
 char scrmem[16]; // текст второй строки экрана
-int chDelChar = 1; // выбранный параметр удаляемого режима
+int chChar = 1; // выбранный параметр удаляемого режима
+int xnt;
 
-// Кнопки лева и права
+// Переменные кнопок
 bool butlSt, butrSt;
 
-// Процедуры аппаратной части
-
+// Процедуры и переменные аппаратной части
 
 
 // Функции и процедуры работы с режимами
@@ -194,13 +185,13 @@ void delMod(int m) {
 
 // Вернуть наименьший номер сохраненного режима
 int firstMod() {
-  int i = 1;
+  int i = 8;
   while (mods[i][0] == -1) ++i;
   return i;
 }
 // Вернуть наименьший номер несохраненного режима
 int firstFree() {
-  int i = 1;
+  int i = 8;
   while (mods[i][0] != -1) ++i;
   return i;
 }
@@ -211,12 +202,11 @@ int lastMod() {
   return i;
 }
 // Перейти в направлении dir к ближайшему сохраненному режиму
-int setMod(int dir, bool edble = false) {
+int setMod(int dir) {
   mod += dir;
-  while (mods[mod][0] == -1) mod += dir;
-  if (edble) {
-    while (mod < 8 and mods[mod][0] == -1) mod += dir;
-  }
+  while (7 < mod && mod < 17 && mods[mod][0] == -1 ) mod += dir;
+  if (mod == 7) mod = lastMod();
+  if (mod == 17) mod = firstMod();
   return mod;
 }
 
@@ -229,14 +219,13 @@ bool badPnt() {
   if (state == 'n') return false;
   if (state == 'd') return (pnt == 1 && modq == 1);
   if (state == 's') return false;
-  if (state == 'r') return false;
 }
 
 // Перезаписать вторую строку на экран
 void rewrite() {
-  if (txtOn != 1 && 0 < millis() % 250 && millis() % 250 < 100) txtOn = 0;
-  if (millis() % 250)
+  int m = millis() / 10;
   lcd.setCursor(0, 1);
+  Serial.println(txtOn);
   for (int i = 0; i < 16; ++i) {
     if (!(l <= i && i <= r && txtOn == 0)) {
       if (scrmem[i] == '^') lcd.write(byte(spnr));
@@ -244,12 +233,11 @@ void rewrite() {
       else if (scrmem[i] == '>') lcd.write(byte(spnRight));
       else if (scrmem[i] == '$') lcd.write(byte(backBut));
       else if (scrmem[i] == '@') lcd.write(byte(okBut));
-      else if (scrmem[i] == '§') lcd.write(byte(celc));
-      else if (scrmem[i] == '±') lcd.write(byte(celc));
+      else if (scrmem[i] == '#') lcd.write(byte(celc));
+      else if (scrmem[i] == ';') lcd.write(byte(uno));
       else lcd.write(scrmem[i]);
     } else lcd.write(' ');
   }
-  txtOn = 0;
 }
 
 // Получить границы выделенного фрагмента
@@ -263,15 +251,11 @@ int getL(int pnt) {
     return fst[pnt];
   }
   if (state == 'd') {
-    int fst[] = {0, 2, 6, 15};
+    int fst[] = {0, 2, 15};
     return fst[pnt];
   }
   if (state == 's') {
     int fst[] = {0, 1, 10};
-    return fst[pnt];
-  }
-  if (state == 'r') {
-    int fst[] = {0, 10};
     return fst[pnt];
   }
 }
@@ -285,15 +269,11 @@ int getR(int pnt) {
     return fst[pnt];
   }
   if (state == 'd') {
-    int fst[] = {0, 4, 11, 15};
+    int fst[] = {0, 4, 15};
     return fst[pnt];
   }
   if (state == 's') {
     int fst[] = {0, 7, 14};
-    return fst[pnt];
-  }
-  if (state == 'r') {
-    int fst[] = {9, 15};
     return fst[pnt];
   }
 }
@@ -303,9 +283,8 @@ void setPnt(int dir) {
   int qo;
   if (state == 'm') qo = 3;
   if (state == 'n') qo = 4;
-  if (state == 'd') qo = 4;
+  if (state == 'd') qo = 3;
   if (state == 's') qo = 3;
-  if (state == 'r') qo = 2;
   pnt = (pnt + dir + qo) % qo;
   while (badPnt()) pnt = (pnt + (dir == 0 ? 1 : dir) + qo) % qo;
   l = getL(pnt);
@@ -321,11 +300,11 @@ void updateScrMem() {
     scrmem[2] = '0' + (mods[mod][1] / 100);
     scrmem[3] = '0' + ((mods[mod][1] / 10) % 10);
     scrmem[4] = '0' + (mods[mod][1] % 10);
-    scrmem[5] = '§';
+    scrmem[5] = '#';
     scrmem[6] = ' ';
     scrmem[7] = '<';
     if (diam == 1) {
-      scrmem[8] = '±';
+      scrmem[8] = ';';
       scrmem[9] = '7';
       scrmem[10] = '5';
     } else {
@@ -346,12 +325,12 @@ void updateScrMem() {
     scrmem[3] = '0' + (mods[mod][1] / 100);
     scrmem[4] = '0' + ((mods[mod][1] / 10) % 10);
     scrmem[5] = '0' + (mods[mod][1] % 10);
-    scrmem[6] = '§';
+    scrmem[6] = '#';
     scrmem[7] = '>';
     scrmem[8] = ' ';
     scrmem[9] = '<';
     if (diam == 1) {
-      scrmem[10] = '±';
+      scrmem[10] = ';';
       scrmem[11] = '7';
       scrmem[12] = '5';
     } else {
@@ -373,8 +352,8 @@ void updateScrMem() {
     scrmem[6] = ' ';
     scrmem[7] = '0' + (mods[mod][1] / 100);
     scrmem[8] = '0' + ((mods[mod][1] / 10) % 10);
-    scrmem[9] = '0' + ((mods[mod][1] / 10) % 10);
-    scrmem[10] = '§';
+    scrmem[9] = '0' + (mods[mod][1] % 10);
+    scrmem[10] = '#';
     scrmem[11] = ' ';
     scrmem[12] = ' ';
     scrmem[13] = ' ';
@@ -399,41 +378,6 @@ void updateScrMem() {
     scrmem[14] = ']';
     scrmem[15] = ' ';
   }
-  if (state == 'r') {
-    scrmem[0] = '<';
-    if (chDelChar == 1) {
-      scrmem[1] = '0' + 2;
-      scrmem[2] = '0' + 9;
-      scrmem[3] = '0' + 0;
-      scrmem[4] = '/';
-      scrmem[5] = '0' + (mods[mod][1] / 100);
-      scrmem[6] = '0' + ((mods[mod][1] / 10) % 10);
-      scrmem[7] = '0' + (mods[mod][1] % 10);
-      scrmem[8] = '§';
-    } else {
-      scrmem[1] = '0' + 2;
-      scrmem[2] = '.';
-      scrmem[3] = '0' + 9;
-      scrmem[4] = '0' + 0;
-      scrmem[5] = '/';
-      if (diam == 1) {
-        scrmem[6] = '±';
-        scrmem[7] = '7';
-        scrmem[8] = '5';
-      } else {
-        scrmem[6] = '3';
-        scrmem[7] = '.';
-        scrmem[8] = '0';
-      }
-    }
-    scrmem[9] = '>';
-    scrmem[10] = '[';
-    scrmem[11] = 's';
-    scrmem[12] = 't';
-    scrmem[13] = 'o';
-    scrmem[14] = 'p';
-    scrmem[15] = ']';
-  }
   setPnt(0);
 }
 
@@ -443,16 +387,23 @@ void editPnt(int dir = 0) {
     if (pnt == 0) {
       if (dir == 0) {
         mod = 1;
+        setUpState(0);
+        return;
       }
-      if (dir == -1 && mod == firstMod()) {
+      if (dir == -1 && mod == 1) {
         if (modq == 9) {
           state = 'd';
         } else {
           state = 'n';
         }
+        setUpState(0);
+        return;
       }
-      if (dir != 0 && mod != lastMod()) {
-        setMod(dir);
+      if (dir == -1) {
+        mod -= 1;
+        while (mods[mod][0] == -1) mod -= 1;
+        setUpState(0);
+        return;
       }
       if (dir == 1 && mod == lastMod()) {
         if (modq == 0) {
@@ -460,9 +411,15 @@ void editPnt(int dir = 0) {
         } else {
           state = 'd';
         }
+        setUpState(0);
+        return;
       }
-      setUpState();
-      return;
+      if (dir == 1) {
+        mod += 1;
+        while (mods[mod][0] == -1) mod += 1;
+        setUpState(0);
+        return;
+      }
     }
     if (pnt == 1) {
       diam = (diam == 1) ? 2 : 1;
@@ -473,7 +430,7 @@ void editPnt(int dir = 0) {
     }
     if (pnt == 2 && dir == 0) {
       state = 'r';
-      setUpState();
+      setUpState(0);
       return;
     }
   }
@@ -482,27 +439,39 @@ void editPnt(int dir = 0) {
       if (dir == 0) {
         state = 'm';
         mod = 1;
+        setUpState(0);
+        return;
       }
       if (dir == -1) {
         if (modq == 0) {
-          state = 'n';
+          state = 'm';
+          mod = lastMod();
         } else {
           state = 'd';
         }
+        setUpState(0);
+        return;
       }
       if (dir == 1) {
         state = 'm';
         mod = 1;
+        setUpState(0);
+        return;
       }
-      setUpState();
-      return;
     }
-    if (pnt == 1 && dir == 0) {
+    if (pnt == 1) {
       if (dir == 0) {
-        mods[0][1] = (mods[0][1] - 50 + 10) % 301 + 51;
+        mods[0][1] = mods[0][1] + 10;
       } else {
-        mods[0][1] = (mods[0][1] - 50 + dir + 301) % 301 + 51;
+        mods[0][1] = mods[0][1] + dir;
       }
+      if (mods[0][1] > 350) mods[0][1] = 50;
+      if (mods[0][1] < 50) mods[0][1] = 350;
+
+      updateScrMem();
+      txtOn = 1;
+      rewrite();
+      return;
     }
     if (pnt == 2) {
       diam = (diam == 1) ? 2 : 1;
@@ -513,7 +482,7 @@ void editPnt(int dir = 0) {
     }
     if (pnt == 3 && dir == 0) {
       state = 's';
-      setUpState();
+      setUpState(0);
       return;
     }
   }
@@ -522,29 +491,35 @@ void editPnt(int dir = 0) {
       if (dir == 0) {
         state = 'm';
         mod = 1;
+        setUpState(0);
+        return;
       }
       if (dir == -1) {
         state = 'm';
         mod = lastMod();
+        setUpState(0);
+        return;
       }
       if (dir == 1) {
         if (modq == 9) {
-          state = 'd';
+          state = 'm';
+          mod = 1;
         } else {
           state = 'n';
         }
+        setUpState(0);
+        return;
       }
-      setUpState();
-      return;
     }
     if (pnt == 1 && dir != 0) {
-      setMod(dir, true);
+      setMod(dir);
     }
     if (pnt == 2 && dir == 0) {
       delMod(mod);
+      modsBackUp();
       mod = 1;
       state = 'm';
-      setUpState();
+      setUpState(0);
     }
     updateScrMem();
     rewrite();
@@ -553,7 +528,7 @@ void editPnt(int dir = 0) {
   if (state == 's') {
     if (pnt == 0 && dir == 0) {
       state = 'n';
-      setUpState();
+      setUpState(1);
       return;
     }
     if (pnt == 1 && dir == 0) {
@@ -561,23 +536,22 @@ void editPnt(int dir = 0) {
       int newNum = firstFree();
       mods[newNum][0] = 1;
       mods[newNum][1] = mods[0][1];
-      mods[newNum][2] = mods[0][2];
       modsBackUp();
       mod = newNum;
       state = 'm';
-      setUpState();
+      setUpState(0);
       return;
     }
     if (pnt == 2 && dir == 0) {
       state = 'r';
-      setUpState();
+      setUpState(0);
       return;
     }
   }
 }
 
 // Настроить все для нового выбранного состояния меню
-void setUpState() {
+void setUpState(bool back) {
   if (state == 'm') {
       lcd.setCursor(0, 0);
       lcd.print("                ");
@@ -591,11 +565,12 @@ void setUpState() {
     else if (mod == 6) lcd.print("ABS");
     else if (mod == 7) lcd.print("ABS+PC");
     else {
-      lcd.print("mode");
+      lcd.print("mode ");
       lcd.print(mod - 7);
     }
       lcd.print(":");
     pnt = 0;
+    diam = 1;
     updateScrMem();
     rewrite();
   }
@@ -606,9 +581,13 @@ void setUpState() {
       lcd.setCursor(0, 0);
       lcd.write(byte(branch));
       lcd.print("new mode ");
-      lcd.print(firstFree());
+      lcd.print(firstFree() - 7);
       lcd.print(":");
     
+    if (!back) {
+      mods[0][1] = 50;
+      diam = 1;
+    }
     pnt = 0;
     updateScrMem();
     rewrite();
@@ -617,9 +596,9 @@ void setUpState() {
       lcd.setCursor(0, 0);
       lcd.print("                ");
     mod = firstMod();
-    chDelChar = 1;
+    chChar = 1;
       lcd.setCursor(0, 0);
-      lcd.print(byte(branch));
+      lcd.write(byte(branch));
       lcd.print("delete mode");
     
     pnt = 0;
@@ -632,8 +611,8 @@ void setUpState() {
       lcd.setCursor(0, 0);
       lcd.write(byte(branch));
       lcd.print("new mode ");
-      lcd.print(firstFree());
-      lcd.print(byte(branch));
+      lcd.print(firstFree() - 7);
+      lcd.write(byte(branch));
     
     pnt = 0;
     updateScrMem();
@@ -647,14 +626,11 @@ void setup() {
 
   // // Настройка подключенных устройств
   // scale.begin(DT, SCK); // весы
-  lcd.begin(16, 2); // экран
-  enc.setEncType(EB_HALFSTEP); // энкодер
-  
-  // // Настройка пинов
-  pinMode(BUTR, INPUT); // лево
-  pinMode(BUTL, INPUT); // право
+  lcd.init();
+  lcd.backlight();
 
-  // pinMode(6, OUTPUT); ??? не очень понимаю, зачем нужно
+	pinMode(BUTR, INPUT); // лево
+	pinMode(BUTL, INPUT); // право
 
 
   // Настройка спецсимволов
@@ -665,19 +641,30 @@ void setup() {
   lcd.createChar(spnRight, spnRight_);
   lcd.createChar(spnLeft, spnLeft_);
   lcd.createChar(celc, celc_);
+  lcd.createChar(uno, uno_);
 
   // Заполнить mods из постоянной памяти
-  modsFill();
+  modsSetUp();
 
+	butrSt = 0;
+	butlSt = 0;
+  xnt = 0;
   state = 'm';
   mod = 1;
-  setUpState();
-
-  butrSt = 0;
-  butlSt = 0;
+  setUpState(0);
+  Serial.println(modq);
+  for (int i = 0; i < 17; ++i) {
+    Serial.print(i);
+    Serial.print(":");
+    Serial.print(mods[i][0]);
+    Serial.print(" ");
+    Serial.println(mods[i][1]);
+  }
+  Serial.println(lastMod());
 }
- 
-void loop() {
+
+void checkInput() {
+  checkInput();
   enc.tick();
   if (enc.right()) {
     editPnt(1);
@@ -688,14 +675,26 @@ void loop() {
   if (enc.click()) {
     editPnt();
   }
-  if (digitalRead(BUTR) == 1 && butrSt == 0) {
-    setPnt(1);
-  }
-  if (digitalRead(BUTL) == 1 && butlSt == 0) {
-    setPnt(-1);
-  }
-  butlSt = digitalRead(BUTL);
-  butrSt = digitalRead(BUTR);
+	if (digitalRead(BUTR) == 0 && butrSt == 1) {
+		setPnt(1);
+	}
+	if (digitalRead(BUTL) == 0 && butlSt == 1) {
+		setPnt(-1);
+	}
+	butlSt = digitalRead(BUTL);
+	butrSt = digitalRead(BUTR);
+}
+ 
+void loop() {
+  checkInput();
   delay(1);
+  if (xnt == 0) {
+		txtOn = 1;
+	}
+	if (xnt == 30) {
+		txtOn = 0;
+	}
+  ++xnt;
+  xnt %= 50;
   rewrite();
 }
