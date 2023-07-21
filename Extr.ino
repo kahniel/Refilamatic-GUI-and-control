@@ -1,10 +1,26 @@
-#include <LiquidCrystal_I2C.h> 
-#include <EncButton2.h>
 #include <EEPROM.h>
+#include <LiquidCrystal_I2C.h> 
+#include <GyverStepper.h>
+#include <EncButton2.h>
+#include <max6675.h>
+#include "GyverPID.h"
 
-#define BUTL 5
-#define BUTR 6
+#define BUTL 25
+#define BUTR 23
+#define COOL 9
+#define EMPT 5
+#define HEAT 10
+#define POT A0
+#define PLACEHOLDER1 2000
+#define thermoDO  6 // DO / SO / MISO
+#define thermoCS  7 //  CS / SS
+#define thermoCLK 8 // CLK / SCK
 
+GyverPID regulator(3, 5, 8, 1000);
+MAX6675 thermo(thermoCLK, thermoCS, thermoDO);
+GStepper<STEPPER2WIRE> puller(1100, 22, 24, 26);
+GStepper<STEPPER2WIRE> spin(1100, 8, 9);
+GStepper<STEPPER2WIRE> vol(1100, 8, 9);
 LiquidCrystal_I2C lcd(0x27, 16, 2);
 EncButton2<EB_ENCBTN> enc(INPUT, 3, 2, 4);
 
@@ -118,14 +134,63 @@ bool txtOn; // мигание выделенного фрагмента
 char scrmem[16]; // текст второй строки экрана
 int chChar = 1; // выбранный параметр удаляемого режима
 int xnt;
+int prevXnt;
+int tnt;
+int prevTnt;
 
 // Переменные кнопок
 bool butlSt, butrSt;
 
 // Процедуры и переменные аппаратной части
-
+int prevMil;
+char stage;
+int estart = -1;
+int temp;
+int d;
+int mil;
+int extrv;
 
 // Функции и процедуры работы с режимами
+char getStage() {
+  mil = millis();
+  if (digitalRead(EMPT)) {
+    if (estart == -1) estart = mil;
+    else {
+      if (mil - estart >= PLACEHOLDER1) {
+        if (stage != 'e') {
+          stage = 'e';
+          puller.disable();
+          setUpState(1);
+        }
+      }
+    }
+  } else {
+    estart = -1;
+  }
+
+  if (mods[mod][1] - temp > 2) {
+    if (!digitalRead(EMPT) && stage != 'h') {
+      stage = 'h';
+      puller.disable();
+      setUpState(1);
+    }
+    prevMil = mil;
+    return;
+  }
+  
+  digitalWrite(HEAT, 0);
+  if (!digitalRead(EMPT) && stage != 's' && stage != 'r') {
+    stage = 'r';
+    puller.enable();
+    puller.setSpeed(1100);
+    prevMil = mil;
+    setUpState(1);
+  }
+  if (stage == 's') {
+    puller.disable();
+  }
+}
+
 
 // Управление хранением mods в постоянной памяти
 void modsSetUp() {
@@ -138,7 +203,6 @@ void modsSetUp() {
   mods[6][1] = 280; // ABS
   mods[7][1] = 240; // ABS + PC
 }
-
 void modsBackUp() {
   EEPROM[0] = modq;
   int p = 1;
@@ -176,7 +240,6 @@ void modsClean() {
   for (int i = 8; i <= 16; ++i) mods[i][0] = -1;
   modsBackUp();
 }
-
 // Удалить режим m
 void delMod(int m) {
   --modq;
@@ -219,13 +282,13 @@ bool badPnt() {
   if (state == 'n') return false;
   if (state == 'd') return (pnt == 1 && modq == 1);
   if (state == 's') return false;
+  if (state == 'r') return (stage != 's' && pnt == 2);
 }
 
 // Перезаписать вторую строку на экран
 void rewrite() {
   int m = millis() / 10;
   lcd.setCursor(0, 1);
-  Serial.println(txtOn);
   for (int i = 0; i < 16; ++i) {
     if (!(l <= i && i <= r && txtOn == 0)) {
       if (scrmem[i] == '^') lcd.write(byte(spnr));
@@ -258,6 +321,13 @@ int getL(int pnt) {
     int fst[] = {0, 1, 10};
     return fst[pnt];
   }
+  if (state == 'r' && stage != 'r') {
+    int fst[] = {0, 2, 13};
+    return fst[pnt];
+  } else if (state == 'r') {
+    int fst[] = {0};
+    return fst[pnt];
+  }
 }
 int getR(int pnt) {
   if (state == 'm') {
@@ -276,6 +346,13 @@ int getR(int pnt) {
     int fst[] = {0, 7, 14};
     return fst[pnt];
   }
+  if (state == 'r' && stage != 'r') {
+    int fst[] = {0, 11, 15};
+    return fst[pnt];
+  } else if (state == 'r') {
+    int fst[] = {0};
+    return fst[pnt];
+  }
 }
 
 // Перейти к ближайшему pnt в направлении dir
@@ -285,6 +362,7 @@ void setPnt(int dir) {
   if (state == 'n') qo = 4;
   if (state == 'd') qo = 3;
   if (state == 's') qo = 3;
+  if (state == 'r') qo = stage == 'r' ? 1 : 3;
   pnt = (pnt + dir + qo) % qo;
   while (badPnt()) pnt = (pnt + (dir == 0 ? 1 : dir) + qo) % qo;
   l = getL(pnt);
@@ -377,6 +455,60 @@ void updateScrMem() {
     scrmem[13] = 'n';
     scrmem[14] = ']';
     scrmem[15] = ' ';
+  }
+  if (state == 'r') {
+    if (stage == 'r') {
+      scrmem[0] = ' ';
+      scrmem[1] = ' ';
+      scrmem[2] = ' ';
+      scrmem[3] = '[';
+      scrmem[4] = 'u';
+      scrmem[5] = 'n';
+      scrmem[6] = 'f';
+      scrmem[7] = 'r';
+      scrmem[8] = 'e';
+      scrmem[9] = 'e';
+      scrmem[10] = 'z';
+      scrmem[11] = 'e';
+      scrmem[12] = ']';
+      scrmem[13] = ' ';
+      scrmem[14] = ' ';
+      scrmem[15] = ' ';
+    } else {
+      scrmem[0] = '$';
+      scrmem[1] = ' ';
+      scrmem[2] = '<';
+      if (chChar == 1) {
+        scrmem[3] = '0' + (temp / 100);
+        scrmem[4] = '0' + ((temp / 10) % 10);
+        scrmem[5] = '0' + (temp % 10);
+        scrmem[6] = '/';
+        scrmem[7] = '0' + (mods[mod][1] / 100);
+        scrmem[8] = '0' + ((mods[mod][1] / 10) % 10);
+        scrmem[9] = '0' + (mods[mod][1] % 10);
+        scrmem[10] = '#';
+      } else {
+        scrmem[3] = '0' + 1;
+        scrmem[4] = '.';
+        scrmem[5] = '0' + 7;
+        scrmem[6] = '0' + 3;
+        scrmem[7] = '/';
+        if (diam == 1) {
+          scrmem[8] = ';';
+          scrmem[9] = '7';
+          scrmem[10] = '5';
+        } else {
+          scrmem[8] = '3';
+          scrmem[9] = '.';
+          scrmem[10] = '0';
+        }
+      }
+      scrmem[11] = '>';
+      scrmem[12] = ' ';
+      scrmem[13] = (stage == 's') ? '[' : ' ';
+      scrmem[14] = (stage == 's') ? '*' : ' ';
+      scrmem[15] = (stage == 's') ? ']' : ' ';
+    }
   }
   setPnt(0);
 }
@@ -548,6 +680,32 @@ void editPnt(int dir = 0) {
       return;
     }
   }
+  if (state == 'r' && stage != 'r') {
+    if (pnt == 0 && dir == 0) {
+      mod = 1;
+      state = 'm';
+      setUpState(0);
+    }
+    if (pnt == 1) {
+      chChar = chChar == 1 ? 2 : 1;
+    }
+    if (pnt == 2 && dir == 0) {
+      stage = 'r';
+      puller.enable();
+      setUpState(1);
+    }
+    updateScrMem();
+    rewrite();
+    return;
+  } else if (state == 'r') {
+    if (dir == 0) {
+      stage = 's';
+      setUpState(1);
+    }
+    updateScrMem();
+    rewrite();
+    return;
+  }
 }
 
 // Настроить все для нового выбранного состояния меню
@@ -618,49 +776,43 @@ void setUpState(bool back) {
     updateScrMem();
     rewrite();
   }
-}
-
-void setup() {
-  Serial.begin(9600); // настройка потока для связи с компьютером
-
-
-  // // Настройка подключенных устройств
-  // scale.begin(DT, SCK); // весы
-  lcd.init();
-  lcd.backlight();
-
-	pinMode(BUTR, INPUT); // лево
-	pinMode(BUTL, INPUT); // право
-
-
-  // Настройка спецсимволов
-  lcd.createChar(spnr, spnr_);
-  lcd.createChar(branch, branch_);
-  lcd.createChar(okBut, okBut_);
-  lcd.createChar(backBut, backBut_);
-  lcd.createChar(spnRight, spnRight_);
-  lcd.createChar(spnLeft, spnLeft_);
-  lcd.createChar(celc, celc_);
-  lcd.createChar(uno, uno_);
-
-  // Заполнить mods из постоянной памяти
-  modsSetUp();
-
-	butrSt = 0;
-	butlSt = 0;
-  xnt = 0;
-  state = 'm';
-  mod = 1;
-  setUpState(0);
-  Serial.println(modq);
-  for (int i = 0; i < 17; ++i) {
-    Serial.print(i);
-    Serial.print(":");
-    Serial.print(mods[i][0]);
-    Serial.print(" ");
-    Serial.println(mods[i][1]);
+  if (state == 'r') {
+    if (!back) {
+      regulator.setpoint = mods[mod][1];
+      estart = -PLACEHOLDER1 - 10;
+      getStage();
+      pnt = 0;
+    }
+      updateScrMem();
+      rewrite();
+      lcd.setCursor(0, 0);
+      lcd.setCursor(0, 0);
+      lcd.write(byte(branch));
+    if (mod == 0) lcd.print("new");
+    else if (mod == 1) lcd.print("PLA");
+    else if (mod == 2) lcd.print("PC");
+    else if (mod == 3) lcd.print("PP");
+    else if (mod == 4) lcd.print("PETG");
+    else if (mod == 5) lcd.print("Neylon");
+    else if (mod == 6) lcd.print("ABS");
+    else if (mod == 7) lcd.print("ABS+PC");
+    else {
+      lcd.print(mod - 7);
+    }
+      lcd.write(byte(branch));
+    if (stage == 'e') {
+      lcd.print("empty            ");
+    }
+    if (stage == 'h') {
+      lcd.print("heating            ");
+    }
+    if (stage == 'r') {
+      lcd.print("running            ");
+    }
+    if (stage == 's') {
+      lcd.print("stopped            ");
+    }
   }
-  Serial.println(lastMod());
 }
 
 void checkInput() {
@@ -683,17 +835,83 @@ void checkInput() {
 	butlSt = digitalRead(BUTL);
 	butrSt = digitalRead(BUTR);
 }
- 
+
+void setup() {
+  Serial.begin(9600); // настройка потока для связи с компьютером
+
+
+  // Настройка подключенных устройств
+  lcd.init();
+  lcd.backlight();
+  puller.setRunMode(KEEP_SPEED);
+  spin.setRunMode(KEEP_SPEED);
+  vol.setRunMode(KEEP_SPEED);
+  regulator.setDirection(NORMAL); // направление регулирования (NORMAL/REVERSE). ПО УМОЛЧАНИЮ СТОИТ NORMAL
+  regulator.setLimits(0, 255);    // пределы (ставим для 8 битного ШИМ). ПО УМОЛЧАНИЮ СТОЯТ 0 И 255
+
+	pinMode(BUTR, INPUT); // лево
+	pinMode(BUTL, INPUT); // право
+  pinMode(HEAT, OUTPUT);
+  pinMode(COOL, OUTPUT);
+
+  // Настройка спецсимволов
+  lcd.createChar(spnr, spnr_);
+  lcd.createChar(branch, branch_);
+  lcd.createChar(okBut, okBut_);
+  lcd.createChar(backBut, backBut_);
+  lcd.createChar(spnRight, spnRight_);
+  lcd.createChar(spnLeft, spnLeft_);
+  lcd.createChar(celc, celc_);
+  lcd.createChar(uno, uno_);
+
+  // Заполнить mods из постоянной памяти
+  modsSetUp();
+  modsFill();
+
+	butrSt = 0;
+	butlSt = 0;
+  xnt = 0;
+  prevXnt = 0;
+  tnt = 0;
+  prevTnt = 0;
+  state = 'm';
+  mod = 1;
+  setUpState(1);
+  puller.setSpeed(1100);
+}
+
 void loop() {
   checkInput();
-  delay(1);
-  if (xnt == 0) {
-		txtOn = 1;
+  if (state == 'r') {
+    puller.tick();
+    spin.tick();
+    vol.tick();
+    getStage();
+  } else {
+    digitalWrite(HEAT, 0);
+    puller.disable();
+    spin.disable();
+    vol.disable();
+  }
+  
+
+  tnt = millis();
+  if (tnt - prevTnt >= 1000) {
+    prevTnt = tnt;
+    double t = thermo.readCelsius();
+    if (temp != int(t)) {
+      temp = t;
+      if (state == 'r' && stage != 'r') updateScrMem();
+    }
+    if (state == 'r') {
+      regulator.input = t;
+      analogWrite(HEAT, regulator.getResultTimer());
+    }
+  }
+  xnt = millis();
+  if (xnt - prevXnt >= 500) {
+    txtOn = !txtOn;
+    prevXnt = xnt;
+    if (!(state == 'r' && stage == 'r')) rewrite();
 	}
-	if (xnt == 30) {
-		txtOn = 0;
-	}
-  ++xnt;
-  xnt %= 50;
-  rewrite();
 }
