@@ -1,0 +1,1 @@
+This repository contains the code for a filament extruder controller developed as a school project. The project features a graphical user interface and controls for all hardware components. All code was written by me.
